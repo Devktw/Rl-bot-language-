@@ -1,13 +1,14 @@
 """คู่แข่งแบบเขียนกฎเอง (เห็นทั้งสนาม) ใช้เป็นคู่ซ้อมที่นิ่ง ไม่เปลี่ยนตามการเทรน
 
 กฎ (team frame, บุกไปทางขวา):
-  - ถือบอล: ใกล้ประตูพอ (d <= 3) ยิง; มีคู่แข่งขวางหน้า หลบขึ้น/ลง; ไม่งั้นเดินหน้า
+  - ถือบอล: ถ้าโอกาสยิงเข้าฝั่งที่ผู้รักษาประตูไม่อยู่ >= 0.45 ยิงฝั่งนั้น (บอทรู้ฝั่งเสมอ);
+            ถูกประกบและเพื่อนอยู่หน้ากว่า ส่ง; มีคู่แข่งขวางหน้า หลบ; ไม่งั้นเดินหน้า
   - เพื่อนถือบอล: วิ่งขึ้นหน้าไปรอ
   - คู่แข่งถือบอล: คนที่ใกล้บอลกว่าไล่บอล อีกคนถอยมาคุมหน้าประตู
 """
 import numpy as np
 
-from .env import BACK, DOWN, FWD, SHOOT, STAY, UP
+from .env import BACK, DOWN, FWD, PASS, SHOOT_TOP, STAY, UP
 
 
 def scripted_actions(env, team, eps=0.1, rng=None):
@@ -28,13 +29,19 @@ def scripted_actions(env, team, eps=0.1, rng=None):
         has = env.holder == p
         a = np.full(N, STAY)
         # ถือบอล
-        gy = np.clip(y0, *env.mouth)
-        dist = (env.W - x0) + np.abs(y0 - gy)
+        open_half = 1 - env.keeper[:, 1 - team]
+        p_open, gy = env.shot_prob(env.pos[:, p], team, open_half)
         blocked = np.zeros(N, dtype=bool)
+        marked = np.zeros(N, dtype=bool)
         for o in ((2, 3) if team == 0 else (0, 1)):
             blocked |= (fx[:, o] == x0 + 1) & (y[:, o] == y0)
+            marked |= np.maximum(np.abs(fx[:, o] - x0), np.abs(y[:, o] - y0)) <= 1
+        mate_fwd = fx[:, players[1 - k]] > x0
         side = np.where(y0 < env.H / 2, DOWN, UP)
-        a_hold = np.where(dist <= 3, SHOOT, np.where(blocked, side, FWD))
+        a_hold = np.where(
+            p_open >= 0.45, SHOOT_TOP + open_half,
+            np.where(marked & mate_fwd, PASS, np.where(blocked, side, FWD)),
+        )
         # เพื่อนถือบอล
         a_support = np.where(x0 < env.W - 2, FWD, np.where(y0 < gy, DOWN, np.where(y0 > gy, UP, STAY)))
         # คู่แข่งถือบอล

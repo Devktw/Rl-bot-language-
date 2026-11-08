@@ -75,6 +75,14 @@ def features(env):
     ball = env.pos[np.arange(N), env.holder]
     f["ball_visible"] = (np.abs(env.pos - ball[:, None]).max(-1) <= env.R).astype(int)
     f["situation"] = f["role"] * 3 + f["xzone"]
+    # ผู้รักษาประตูฝั่งที่ผู้เล่นคนนี้บุก: ยืนครึ่งไหน และมองเห็นไหม
+    f["keeper_side"] = np.stack([env.keeper[:, 1 - (i // 2)] for i in range(4)], 1)
+    vis = np.zeros((N, 4), dtype=int)
+    for i in range(4):
+        kc = env.keeper_cells(1 - i // 2)
+        for c in range(2):
+            vis[:, i] |= (np.abs(env.pos[:, i] - kc[:, c]).max(-1) <= env.R).astype(int)
+    f["keeper_visible"] = vis
     return f
 
 
@@ -90,7 +98,7 @@ def rollout(env, teams, steps=300, interventions=(), seed=0, bot_teams=()):
     rng = np.random.default_rng(seed)
     obs, _ = env.reset()
     N, K = env.N, env.K
-    rec = {k: [] for k in ("tok", "mv", "heard")}
+    rec = {k: [] for k in ("tok", "mv", "heard", "shot", "shot_open", "shooter")}
     feats = []
     goals = np.zeros(2, dtype=int)
     eps = 0
@@ -116,8 +124,12 @@ def rollout(env, teams, steps=300, interventions=(), seed=0, bot_teams=()):
             tk_opp = scramble(tk_opp, [0, 1], rng, K)
         if "blue_opp" in interventions:
             tk_opp = scramble(tk_opp, [2, 3], rng, K)
+        env_holder_before = env.holder.copy()
         obs, _, _, done, info = env.step(mv, tk_mate, tk_opp)
         rec["tok"].append(tk)
+        rec["shot"].append(info["shot"])
+        rec["shot_open"].append(info["shot_open_side"])
+        rec["shooter"].append(env_holder_before)
         rec["mv"].append(mv)
         g = info["goal"]
         goals[0] += (g == 0).sum()
@@ -125,6 +137,16 @@ def rollout(env, teams, steps=300, interventions=(), seed=0, bot_teams=()):
         eps += done.sum()
     out = {k: np.stack(v) for k, v in rec.items()}
     out["feat"] = {k: np.stack([f[k] for f in feats]) for k in feats[0]}
+    # ยิงไปฝั่งที่ผู้รักษาประตูไม่อยู่ได้บ่อยแค่ไหน แยกตามว่าคนยิงมองเห็นผู้รักษาประตูหรือไม่
+    kv = out["feat"]["keeper_visible"]
+    S_, N_ = out["shooter"].shape
+    shooter_vis = kv[np.arange(S_)[:, None], np.arange(N_)[None, :], out["shooter"]]
+    for T, team in enumerate(("red", "blue")):
+        m = out["shot"] & (out["shooter"] // 2 == T)
+        for name, cond in (("blind", shooter_vis == 0), ("seeing", shooter_vis == 1)):
+            mm = m & cond
+            out[f"{team}_open_rate_{name}"] = float(out["shot_open"][mm].mean()) if mm.sum() else float("nan")
+            out[f"{team}_n_shots_{name}"] = int(mm.sum())
     out["red_win"] = goals[0] / eps
     out["blue_win"] = goals[1] / eps
     out["episodes"] = int(eps)
@@ -171,8 +193,13 @@ def signaling_listening(r, K, rng):
         cols = [2 * T, 2 * T + 1]
         tok = r["tok"][:, :, cols]
         d = {}
-        for feat in ("has_ball", "role", "xzone", "yzone", "open", "situation"):
+        for feat in ("has_ball", "role", "xzone", "yzone", "open", "situation", "keeper_side"):
             d[f"MI_tok_{feat}"] = mi_excess(tok, r["feat"][feat][:, :, cols], rng)
+        seen = r["feat"]["keeper_visible"][:, :, cols] == 1
+        if seen.sum() > 500:
+            d["MI_tok_keeper_side_when_seen"] = mi_excess(tok[seen], r["feat"]["keeper_side"][:, :, cols][seen], rng)
+        for k in ("open_rate_blind", "open_rate_seeing", "n_shots_blind", "n_shots_seeing"):
+            d[k] = r[f"{name}_{k}"]
         # listening: token ที่ได้ยินจากเพื่อน vs action ของผู้ฟัง (ตัดช่วง step แรกที่ยังไม่มีข้อความ)
         heard = r["heard"][1:, :, cols]
         mv = r["mv"][1:, :, cols]
@@ -192,17 +219,18 @@ def signaling_listening(r, K, rng):
     return res
 
 
-def plot_lexicon(lex_by_team, freq_by_team, title, path):
+def plot_lexicon(lex_by_team, freq_by_team, title, path, labels=None):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
-    labels = [f"{ROLE_NAMES_EN[s // 3]} / {ZONE_NAMES_EN[s % 3]}" for s in range(9)]
+    if labels is None:
+        labels = [f"{ROLE_NAMES_EN[s // 3]} / {ZONE_NAMES_EN[s % 3]}" for s in range(9)]
     for ax, (name, lex) in zip(axes, lex_by_team.items()):
         im = ax.imshow(lex, vmin=0, vmax=1, cmap="viridis", aspect="auto")
-        ax.set_yticks(range(9))
+        ax.set_yticks(range(len(labels)))
         ax.set_yticklabels([f"{l} ({f:.0%})" for l, f in zip(labels, freq_by_team[name])], fontsize=7)
         ax.set_xticks(range(lex.shape[1]))
         ax.set_xlabel("token")
@@ -234,7 +262,10 @@ def analyze_run(run_dir, steps, n_envs, out_root):
     for team_i, team in enumerate(("red", "blue")):
         if cond["speak"][team_i]:
             r = rollout(env, teams, steps, interventions=(f"{team}_mate",), seed=1, bot_teams=bt)
-            iv[f"{team}_mate_scrambled"] = {"red": r["red_win"], "blue": r["blue_win"]}
+            iv[f"{team}_mate_scrambled"] = {
+                "red": r["red_win"], "blue": r["blue_win"],
+                f"{team}_open_rate_blind": r[f"{team}_open_rate_blind"],
+            }
             if cond["hear_opp"][1 - team_i]:
                 r = rollout(env, teams, steps, interventions=(f"{team}_opp",), seed=2, bot_teams=bt)
                 iv[f"{team}_opp_scrambled"] = {"red": r["red_win"], "blue": r["blue_win"]}
@@ -247,6 +278,15 @@ def analyze_run(run_dir, steps, n_envs, out_root):
         lex[team], freq[team] = lexicon(base["tok"][:, :, cols], base["feat"]["situation"][:, :, cols], K)
     plot_lexicon(lex, freq, f"{name} ({a['cond']})", os.path.join(out_dir, "lexicon.png"))
     summary["lexicon"] = {t: np.round(lex[t], 3).tolist() for t in lex}
+    # lexicon เทียบกับผู้รักษาประตู: (มองเห็นไหม) x (ยืนฝั่งไหน)
+    klabels = ["keeper unseen / top", "keeper unseen / bottom", "keeper SEEN / top", "keeper SEEN / bottom"]
+    lex2, freq2 = {}, {}
+    for T, team in enumerate(("red", "blue")):
+        cols = [2 * T, 2 * T + 1]
+        sit2 = base["feat"]["keeper_visible"][:, :, cols] * 2 + base["feat"]["keeper_side"][:, :, cols]
+        lex2[team], freq2[team] = lexicon(base["tok"][:, :, cols], sit2, K, n_sit=4)
+    plot_lexicon(lex2, freq2, f"{name}: token vs goalkeeper", os.path.join(out_dir, "lexicon_keeper.png"), klabels)
+    summary["lexicon_keeper"] = {t: np.round(lex2[t], 3).tolist() for t in lex2}
 
     # drift ระหว่าง checkpoint
     drift, prev = [], None

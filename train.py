@@ -104,7 +104,7 @@ def main():
         buf = {
             k: [] for k in ("obs", "st", "mv", "tk", "lp", "val", "rew", "done")
         }
-        ep_stats = dict(goal_red=0, goal_blue=0, draw=0, passes=0, pass_ok=0, shots=0, tackles=0)
+        ep_stats = dict(goal_red=0, goal_blue=0, draw=0, passes=0, pass_ok=0, shots=0, red_shots=0, red_shots_open=0, tackles=0)
         tok_hist = np.zeros((2, args.vocab))
         for _ in range(S):
             obs = torch.from_numpy(obs_np)
@@ -143,6 +143,9 @@ def main():
             ep_stats["pass_ok"] += int(info["pass_ok"].sum())
             ep_stats["shots"] += int(info["shot"].sum())
             ep_stats["tackles"] += int(info["tackle"].sum())
+            red_shot = info["shot"] & (info["holder_team"] == 0)
+            ep_stats["red_shots"] += int(red_shot.sum())
+            ep_stats["red_shots_open"] += int((red_shot & info["shot_open_side"]).sum())
 
         B = {k: torch.stack(v) for k, v in buf.items()}
         st_last = torch.from_numpy(st_np)
@@ -205,6 +208,7 @@ def main():
             pass_per_ep=ep_stats["passes"] / max(n_ep, 1),
             pass_success=ep_stats["pass_ok"] / max(ep_stats["passes"], 1),
             shots_per_ep=ep_stats["shots"] / max(n_ep, 1),
+            red_shot_open_side=ep_stats["red_shots_open"] / max(ep_stats["red_shots"], 1),
             tackles_per_ep=ep_stats["tackles"] / max(n_ep, 1),
             ep_len=S * N / max(n_ep, 1),
             sps=upd * S * N / (time.time() - t0),
@@ -219,7 +223,7 @@ def main():
             print(
                 f"[{args.cond} s{args.seed}] upd {upd} steps {row['env_steps']:,} "
                 f"red {row['red_win']:.2f} blue {row['blue_win']:.2f} draw {row['draw']:.2f} "
-                f"len {row['ep_len']:.1f} pass {row['pass_per_ep']:.2f}({row['pass_success']:.2f}) "
+                f"len {row['ep_len']:.1f} open {row['red_shot_open_side']:.2f} pass {row['pass_per_ep']:.2f}({row['pass_success']:.2f}) "
                 f"tokH {metrics['red_tok_entropy']:.2f} "
                 f"sps {row['sps']:.0f}",
                 flush=True,
