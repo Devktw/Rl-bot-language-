@@ -44,7 +44,7 @@ def parse():
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--minibatch", type=int, default=4096)
     p.add_argument("--ent_move", type=float, default=0.01)
-    p.add_argument("--ent_msg", type=float, default=0.01)
+    p.add_argument("--ent_msg", type=float, default=0.001)
     p.add_argument("--vf_coef", type=float, default=0.5)
     p.add_argument("--save_every", type=int, default=50)
     p.add_argument("--out", default="runs")
