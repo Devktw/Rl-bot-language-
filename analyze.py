@@ -22,6 +22,7 @@ import torch
 
 from football.agent import TeamPolicy
 from football.env import Football2v2
+from football.scripted import scripted_actions
 from train import CONDITIONS
 
 ROLE_NAMES = ["ฉันถือบอล", "เพื่อนถือบอล", "คู่แข่งถือบอล"]
@@ -42,7 +43,12 @@ def load(ckpt_path, n_envs=512, seed=123):
         t.load_state_dict(ck[name])
         t.eval()
         teams.append(t)
+    a.setdefault("opponent", "selfplay")
     return env, teams, a
+
+
+def bots(a):
+    return (1,) if a.get("opponent") == "scripted" else ()
 
 
 def features(env):
@@ -79,7 +85,7 @@ def scramble(tok, cols, rng, K):
 
 
 @torch.no_grad()
-def rollout(env, teams, steps=300, interventions=(), seed=0):
+def rollout(env, teams, steps=300, interventions=(), seed=0, bot_teams=()):
     """interventions: ชุดของ 'red_mate', 'blue_mate', 'red_opp', 'blue_opp'"""
     rng = np.random.default_rng(seed)
     obs, _ = env.reset()
@@ -95,6 +101,9 @@ def rollout(env, teams, steps=300, interventions=(), seed=0):
         mv = np.zeros((N, 4), dtype=np.int64)
         tk = np.zeros((N, 4), dtype=np.int64)
         for T in range(2):
+            if T in bot_teams:
+                mv[:, 2 * T : 2 * T + 2] = scripted_actions(env, T)
+                continue
             m, t, _ = teams[T].act(o[:, 2 * T : 2 * T + 2].reshape(N * 2, -1))
             mv[:, 2 * T : 2 * T + 2] = m.view(N, 2).numpy()
             tk[:, 2 * T : 2 * T + 2] = t.view(N, 2).numpy()
@@ -215,7 +224,8 @@ def analyze_run(run_dir, steps, n_envs, out_root):
     cond = CONDITIONS[a["cond"]]
     summary = {"run": name, "cond": a["cond"], "ckpt": os.path.basename(ckpts[-1])}
 
-    base = rollout(env, teams, steps)
+    bt = bots(a)
+    base = rollout(env, teams, steps, bot_teams=bt)
     summary["win"] = {"red": base["red_win"], "blue": base["blue_win"], "episodes": base["episodes"]}
     summary["language"] = signaling_listening(base, K, rng)
 
@@ -223,10 +233,10 @@ def analyze_run(run_dir, steps, n_envs, out_root):
     iv = {}
     for team_i, team in enumerate(("red", "blue")):
         if cond["speak"][team_i]:
-            r = rollout(env, teams, steps, interventions=(f"{team}_mate",), seed=1)
+            r = rollout(env, teams, steps, interventions=(f"{team}_mate",), seed=1, bot_teams=bt)
             iv[f"{team}_mate_scrambled"] = {"red": r["red_win"], "blue": r["blue_win"]}
             if cond["hear_opp"][1 - team_i]:
-                r = rollout(env, teams, steps, interventions=(f"{team}_opp",), seed=2)
+                r = rollout(env, teams, steps, interventions=(f"{team}_opp",), seed=2, bot_teams=bt)
                 iv[f"{team}_opp_scrambled"] = {"red": r["red_win"], "blue": r["blue_win"]}
     summary["interventions"] = iv
 
@@ -242,7 +252,7 @@ def analyze_run(run_dir, steps, n_envs, out_root):
     drift, prev = [], None
     for c in ckpts:
         e, tm, _ = load(c, n_envs=256)
-        r = rollout(e, tm, 150)
+        r = rollout(e, tm, 150, bot_teams=bt)
         cur = {}
         row = {"ckpt": os.path.basename(c)}
         for T, team in enumerate(("red", "blue")):

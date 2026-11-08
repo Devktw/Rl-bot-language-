@@ -14,6 +14,7 @@ import torch
 
 from football.agent import TeamPolicy
 from football.env import Football2v2
+from football.scripted import scripted_actions
 
 # speak: ทีมนั้นส่ง token ได้ไหม, hear_opp: ทีมนั้นได้ยิน token ของคู่แข่งไหม
 CONDITIONS = {
@@ -48,6 +49,9 @@ def parse():
     p.add_argument("--save_every", type=int, default=50)
     p.add_argument("--out", default="runs")
     p.add_argument("--threads", type=int, default=1)
+    p.add_argument("--opponent", default="selfplay", choices=["selfplay", "scripted"],
+                   help="scripted = ทีมน้ำเงินเป็นบอทเขียนกฎ ไม่ถูกเทรน")
+    p.add_argument("--tag", default="", help="ต่อท้ายชื่อโฟลเดอร์ run")
     return p.parse_args()
 
 
@@ -80,7 +84,8 @@ def main():
     args = parse()
     torch.set_num_threads(args.threads)
     torch.manual_seed(args.seed)
-    run_dir = os.path.join(args.out, f"{args.cond}_s{args.seed}")
+    name = f"{args.cond}{'_vs_bot' if args.opponent == 'scripted' else ''}{args.tag}_s{args.seed}"
+    run_dir = os.path.join(args.out, name)
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "config.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
@@ -89,6 +94,7 @@ def main():
     teams = [TeamPolicy(env.obs_dim, env.state_dim, args.vocab) for _ in range(2)]
     opts = [torch.optim.Adam(t.parameters(), lr=args.lr, eps=1e-5) for t in teams]
     S, N = args.steps, args.envs
+    bot_teams = (1,) if args.opponent == "scripted" else ()
 
     obs_np, st_np = env.reset()
     log_f = open(os.path.join(run_dir, "log.csv"), "w", newline="")
@@ -107,6 +113,11 @@ def main():
             tk = np.zeros((N, 4), dtype=np.int64)
             lps, vals = [], []
             for T in range(2):
+                if T in bot_teams:
+                    mv[:, 2 * T : 2 * T + 2] = scripted_actions(env, T)
+                    lps.append(torch.zeros(N, 2))
+                    vals.append(torch.zeros(N))
+                    continue
                 o = obs[:, 2 * T : 2 * T + 2].reshape(N * 2, -1)
                 m, t, lp = teams[T].act(o)
                 mv[:, 2 * T : 2 * T + 2] = m.view(N, 2).numpy()
@@ -137,6 +148,8 @@ def main():
         st_last = torch.from_numpy(st_np)
         metrics = {}
         for T in range(2):
+            if T in bot_teams:
+                continue
             pol, opt = teams[T], opts[T]
             with torch.no_grad():
                 last_v = pol.value(st_last[:, T])
@@ -207,7 +220,7 @@ def main():
                 f"[{args.cond} s{args.seed}] upd {upd} steps {row['env_steps']:,} "
                 f"red {row['red_win']:.2f} blue {row['blue_win']:.2f} draw {row['draw']:.2f} "
                 f"len {row['ep_len']:.1f} pass {row['pass_per_ep']:.2f}({row['pass_success']:.2f}) "
-                f"tokH {metrics['red_tok_entropy']:.2f}/{metrics['blue_tok_entropy']:.2f} "
+                f"tokH {metrics['red_tok_entropy']:.2f} "
                 f"sps {row['sps']:.0f}",
                 flush=True,
             )
