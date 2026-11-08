@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+runs/*/ckpt_*.pt
+!runs/*/ckpt_00400.pt
+runs/
