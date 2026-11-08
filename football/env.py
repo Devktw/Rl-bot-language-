@@ -16,6 +16,9 @@
     ยิงไปฝั่งที่เขายืน โอกาสเข้าเหลือแค่ 10% แต่คนยิงจากไกลมองไม่เห็นเขา
   - คนถือบอลเดินได้ช้ากว่า (สำเร็จ p_carry_move) และคู่แข่งที่ยืนติดกันแย่งบอลได้
     จึงต้องส่งบอลกันมากขึ้น
+  - "คนเลี้ยงบอลก้มหน้า": คนถือบอลเห็นผู้รักษาประตูฝั่งที่บุกเฉพาะเมื่อยืนชิดประตู (ห่าง <= 1)
+    ส่วนผู้เล่นที่ไม่ได้ถือบอลเห็นผู้รักษาประตูเมื่ออยู่ครึ่งสนามฝั่งบุก (x' >= keeper_view_x)
+    ข้อมูลจึงอยู่ที่คนหนึ่ง แต่คนตัดสินใจยิงเป็นอีกคน
 
 การมองเห็นจำกัด: เห็นเฉพาะสิ่งที่อยู่ในรัศมี R (Chebyshev) รอบตัว
 รู้เสมอแค่ตำแหน่งตัวเอง, ตัวเองถือบอลไหม, และทีมไหนครองบอล
@@ -29,7 +32,7 @@ SHOOT = SHOOT_TOP  # ชื่อเดิม เผื่อโค้ดเก�
 N_MOVE = 8
 _DY = np.array([0, -1, 1, 0, 0, 0, 0, 0])
 _DX = np.array([0, 0, 0, -1, 1, 0, 0, 0])  # ใน team frame
-N_CH = 4  # ช่องของ ego grid: เพื่อน, คู่แข่ง, บอล, ผู้รักษาประตู
+N_CH = 3  # ช่องของ ego grid: เพื่อน, คู่แข่ง, บอล
 
 
 class Football2v2:
@@ -49,6 +52,7 @@ class Football2v2:
         p_carry_move: float = 0.6,
         p_keeper_switch: float = 0.1,
         keeper_save: float = 0.9,
+        keeper_view_x: int | None = None,
         seed: int = 0,
     ):
         self.N, self.W, self.H, self.R, self.K = n_envs, width, height, vision, vocab
@@ -57,10 +61,11 @@ class Football2v2:
         self.hear_opp = np.array(hear_opp, dtype=bool)
         self.p_tackle, self.p_tackle_adj, self.p_intercept = p_tackle, p_tackle_adj, p_intercept
         self.p_carry_move, self.p_keeper_switch, self.keeper_save = p_carry_move, p_keeper_switch, keeper_save
+        self.keeper_view_x = width // 2 if keeper_view_x is None else keeper_view_x
         self.rng = np.random.default_rng(seed)
         g = 2 * vision + 1
         self.grid_cells = g * g
-        self.obs_dim = 6 + N_CH * self.grid_cells + 3 * vocab + 1
+        self.obs_dim = 6 + N_CH * self.grid_cells + 2 + 3 * vocab + 1
         self.state_dim = 8 + 4 + 2 + 1
         # ปากประตูกว้าง H-2 แถว แบ่งเป็นครึ่งบน/ล่าง
         self.mouth = (1, height - 2)
@@ -111,6 +116,18 @@ class Football2v2:
         cells[:, 1, 1] = hi
         return cells
 
+    def keeper_visible(self):
+        """(N,4) ผู้เล่นแต่ละคนเห็นผู้รักษาประตูฝั่งที่ตัวเองบุกไหม"""
+        vis = np.zeros((self.N, 4), dtype=bool)
+        for i in range(4):
+            team = i // 2
+            kc = self.keeper_cells(1 - team)
+            dist = np.minimum(*[np.abs(self.pos[:, i] - kc[:, c]).max(-1) for c in range(2)])
+            holder = self.holder == i
+            fx = self.frame_x(self.pos[:, i, 0], team)
+            vis[:, i] = np.where(holder, dist <= 1, fx >= self.keeper_view_x) | (self.R >= max(self.W, self.H))
+        return vis
+
     # ------------------------------------------------------------------ observe
     def observe(self):
         N, R, K = self.N, self.R, self.K
@@ -118,7 +135,7 @@ class Football2v2:
         ar = np.arange(N)
         obs = np.zeros((N, 4, self.obs_dim), dtype=np.float32)
         ball = self.pos[ar, self.holder]  # (N,2)
-        kc = [self.keeper_cells(d) for d in range(2)]
+        kvis = self.keeper_visible()
         for i in range(4):
             team = i // 2
             mate = i ^ 1
@@ -136,7 +153,6 @@ class Football2v2:
                 [self.pos[:, mate]],
                 [self.pos[:, e] for e in opps],
                 [ball],
-                [kc[d][:, c] for d in range(2) for c in range(2)],
             )
             for ch, plist in enumerate(ents):
                 for p in plist:
@@ -149,6 +165,10 @@ class Football2v2:
                     rows = np.nonzero(vis)[0]
                     o[rows, base + ch * self.grid_cells + cell[rows]] = 1.0
             base += N_CH * self.grid_cells
+            # ผู้รักษาประตูฝั่งที่บุก: one-hot (บน, ล่าง) ถ้ามองเห็น ไม่งั้นเป็นศูนย์
+            rows = np.nonzero(kvis[:, i])[0]
+            o[rows, base + self.keeper[rows, 1 - team]] = 1.0
+            base += 2
             # token ของเพื่อนร่วมทีม
             if self.speak[team]:
                 o[ar, base + self.msg[:, mate]] = 1.0

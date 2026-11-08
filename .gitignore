@@ -4,3 +4,4 @@ runs/*/ckpt_*.pt
 !runs/*/ckpt_00400.pt
 runs/
 runs_v1/
+runs_v2/

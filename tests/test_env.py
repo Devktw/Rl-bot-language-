@@ -47,7 +47,7 @@ def test_messages_private_vs_eavesdrop():
         env = Football2v2(n_envs=1, vocab=4, hear_opp=hear, seed=4)
         env.reset()
         obs, *_ = env.step(np.zeros((1, 4), int), np.array([[1, 2, 3, 0]]))
-        base = 6 + 4 * env.grid_cells
+        base = 6 + 3 * env.grid_cells + 2
         assert obs[0, 0, base + 2] == 1  # แดง 0 ได้ยินเพื่อน (token 2)
         assert obs[0, 0, base + 4:base + 12].sum() == 2 * expect
 
@@ -63,16 +63,20 @@ def test_pass_intercept():
     assert (env.holder == 2).all()
 
 
-def test_keeper_visible_only_when_close():
+def test_keeper_visibility_head_down():
     env = Football2v2(n_envs=1, seed=6)
     env.reset()
-    env.keeper[:] = 0
-    g = env.grid_cells
-    env.pos[0] = [[env.W - 1, 2], [0, 0], [5, 5], [6, 5]]
-    near = env.observe()[0, 0, 6 + 3 * g: 6 + 4 * g].sum()
-    env.pos[0, 0] = [env.W - 4, 2]
-    far = env.observe()[0, 0, 6 + 3 * g: 6 + 4 * g].sum()
-    assert near == 2 and far == 0
+    env.keeper[:] = 1  # ผู้รักษาประตูน้ำเงินยืนครึ่งล่าง
+    k = 6 + 3 * env.grid_cells
+    env.pos[0] = [[env.W - 3, 2], [env.W // 2, 0], [5, 5], [6, 5]]
+    env.holder[:] = 0
+    o = env.observe()[0]
+    assert o[0, k:k + 2].sum() == 0          # คนถือบอลห่างประตู 2 ช่อง: มองไม่เห็น
+    assert o[1, k + 1] == 1                  # เพื่อนที่อยู่ครึ่งสนามฝั่งบุก: เห็นว่าอยู่ล่าง
+    env.pos[0, 0] = [env.W - 1, 2]
+    assert env.observe()[0, 0, k + 1] == 1   # ชิดประตูแล้วเห็นเอง
+    env.pos[0, 1] = [env.W // 2 - 1, 0]
+    assert env.observe()[0, 1, k:k + 2].sum() == 0  # เพื่อนอยู่ครึ่งตัวเอง: ไม่เห็น
 
 
 def test_carrier_slower():

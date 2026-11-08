@@ -77,12 +77,7 @@ def features(env):
     f["situation"] = f["role"] * 3 + f["xzone"]
     # ผู้รักษาประตูฝั่งที่ผู้เล่นคนนี้บุก: ยืนครึ่งไหน และมองเห็นไหม
     f["keeper_side"] = np.stack([env.keeper[:, 1 - (i // 2)] for i in range(4)], 1)
-    vis = np.zeros((N, 4), dtype=int)
-    for i in range(4):
-        kc = env.keeper_cells(1 - i // 2)
-        for c in range(2):
-            vis[:, i] |= (np.abs(env.pos[:, i] - kc[:, c]).max(-1) <= env.R).astype(int)
-    f["keeper_visible"] = vis
+    f["keeper_visible"] = env.keeper_visible().astype(int)
     return f
 
 
